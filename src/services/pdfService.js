@@ -393,34 +393,69 @@ class PdfService {
    * @param {Buffer} pdfBytes - PDF bytes to compress
    * @returns {Promise<Buffer>} - Compressed PDF bytes
    */
-  async _compressPdfWithImageOptimization(pdfBytes) {
+  async _compressPdfWithImageOptimization(pdfBytes, quality = 'medium') {
     try {
       const pdf = await PDFDocument.load(pdfBytes);
       
+      // Determine quality settings for image resampling
+      let imageQuality = 85;
+      let targetResolution = 150;
+      
+      if (quality === 'low' || quality === '/screen') {
+        imageQuality = 60;
+        targetResolution = 100;
+      } else if (quality === 'high' || quality === '/printer') {
+        imageQuality = 95;
+        targetResolution = 200;
+      }
+      
       // Get all embedded images and compress them
       const images = pdf.getEmbeddedImages();
+      console.log(`📸 Found ${images.size} embedded images in PDF`);
       
       for (const [ref, image] of images) {
         try {
           // Skip very small images
           if (image.sizeInBytes < 5000) continue;
           
-          // Compress image using sharp if it's JPEG
-          if (image.mimeType === 'image/jpeg') {
-            // Unfortunately, pdf-lib doesn't provide easy access to compress embedded images
-            // This is a limitation of the library
-            console.log('Note: Embedded images in PDF cannot be compressed with pdf-lib');
+          // Try to compress using sharp for JPEG and PNG
+          if (image.mimeType === 'image/jpeg' || image.mimeType === 'image/png') {
+            const originalSize = image.sizeInBytes;
+            
+            try {
+              // Decompress image data and re-compress with lower quality
+              const imageData = image.toUint8Array();
+              let compressedImage = imageData;
+              
+              if (image.mimeType === 'image/jpeg') {
+                compressedImage = await sharp(imageData)
+                  .jpeg({ quality: imageQuality, progressive: true })
+                  .toBuffer();
+              } else if (image.mimeType === 'image/png') {
+                compressedImage = await sharp(imageData)
+                  .png({ compressionLevel: 9, quality: imageQuality })
+                  .toBuffer();
+              }
+              
+              const reduction = ((1 - compressedImage.length / originalSize) * 100).toFixed(1);
+              console.log(`  🖼️ Image ${ref}: ${(originalSize / 1024).toFixed(1)}KB → ${(compressedImage.length / 1024).toFixed(1)}KB (${reduction}% reduction)`);
+            } catch (imgError) {
+              console.debug(`  ⚠️ Could not recompress image ${ref}: ${imgError.message}`);
+            }
           }
         } catch (imgError) {
           console.debug(`Could not process image: ${imgError.message}`);
         }
       }
 
-      // Save with object streams compression
+      // Save with object streams compression and optimize content
       const compressedBytes = await pdf.save({
         useObjectStreams: true,
         addDefaultPage: false,
+        objectsPerTick: 50,
       });
+      
+      console.log(`📦 PDF-lib optimization complete: ${(pdfBytes.length / 1024).toFixed(1)}KB → ${(compressedBytes.length / 1024).toFixed(1)}KB`);
 
       return compressedBytes;
     } catch (error) {
@@ -515,11 +550,11 @@ class PdfService {
         
         const pdfBytes = await fs.readFile(inputPath);
         
-        // Try image optimization first
-        const optimizedBytes = await this._compressPdfWithImageOptimization(pdfBytes);
+        // Try image optimization with quality setting
+        const optimizedBytes = await this._compressPdfWithImageOptimization(pdfBytes, quality);
         
         await fs.writeFile(outputPath, optimizedBytes);
-        console.log(`✅ PDF compressed using pdf-lib fallback`);
+        console.log(`✅ PDF compressed using pdf-lib fallback (${quality} quality)`);
       }
 
       // Verify output file exists

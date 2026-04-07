@@ -264,9 +264,24 @@ router.post('/pdf-compress', upload.single('file'), async (req, res) => {
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${compressedFilename}"`);
     res.setHeader('Content-Length', compressionResult.compressedSize);
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Keep-Alive', 'timeout=5, max=100');
 
-    // Send the file
-    res.sendFile(path.resolve(outputPath), (err) => {
+    // Use pipe to stream file to avoid buffering issues and connection resets
+    const fileStream = fs.createReadStream(path.resolve(outputPath), { highWaterMark: 64 * 1024 });
+    let streamEnded = false;
+
+    fileStream.on('error', (err) => {
+      console.error('❌ Stream read error:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ success: false, error: { message: 'Failed to read compressed file' } });
+      } else if (!streamEnded) {
+        res.end();
+      }
+    });
+
+    res.on('finish', () => {
+      streamEnded = true;
       // Cleanup files after sending
       if (inputPath && fs.existsSync(inputPath)) {
         try { fs.unlinkSync(inputPath); } catch (e) {}
@@ -274,11 +289,20 @@ router.post('/pdf-compress', upload.single('file'), async (req, res) => {
       if (outputPath && fs.existsSync(outputPath)) {
         try { fs.unlinkSync(outputPath); } catch (e) {}
       }
+    });
 
-      if (err) {
-        console.error('❌ File send error:', err);
+    res.on('close', () => {
+      streamEnded = true;
+      // Cleanup if client closes early
+      if (inputPath && fs.existsSync(inputPath)) {
+        try { fs.unlinkSync(inputPath); } catch (e) {}
+      }
+      if (outputPath && fs.existsSync(outputPath)) {
+        try { fs.unlinkSync(outputPath); } catch (e) {}
       }
     });
+
+    fileStream.pipe(res);
   } catch (error) {
     console.error('❌ PDF compression failed:', error.message);
     console.error('   Stack:', error.stack);
@@ -295,7 +319,7 @@ router.post('/pdf-compress', upload.single('file'), async (req, res) => {
       },
     });
   }
-});
+})
 
 /**
  * POST /api/simple-convert/pdf-extract-images

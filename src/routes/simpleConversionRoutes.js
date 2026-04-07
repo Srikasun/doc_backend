@@ -20,6 +20,8 @@ const upload = multer({
 // Import conversion services
 const documentService = require('../services/documentService');
 const pdfService = require('../services/pdfService');
+const imageService = require('../services/imageService');
+const videoService = require('../services/videoService');
 
 /**
  * POST /api/simple-convert/docx-to-pdf
@@ -226,6 +228,54 @@ router.post('/pdf-to-pptx', upload.single('file'), async (req, res) => {
 });
 
 /**
+ * POST /api/simple-convert/pdf-compress
+ * Compress PDF - accepts file upload directly
+ */
+router.post('/pdf-compress', upload.single('file'), async (req, res) => {
+  let inputPath = null;
+  let outputPath = null;
+
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'No file uploaded' },
+      });
+    }
+
+    inputPath = req.file.path;
+    const quality = Number(req.body?.quality || 75);
+    console.log('📄 Compressing PDF:', req.file.originalname);
+
+    const tempOutput = path.join('uploads/temp', `compressed_${Date.now()}.pdf`);
+    await pdfService.compressPdf(inputPath, tempOutput, { quality });
+    outputPath = tempOutput;
+
+    res.download(outputPath, req.file.originalname.replace(/\.pdf$/i, '_compressed.pdf'), (err) => {
+      if (inputPath && fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+      if (outputPath && fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+
+      if (err) {
+        console.error('❌ Download error:', err);
+      }
+    });
+  } catch (error) {
+    console.error('❌ PDF compression failed:', error);
+
+    if (inputPath && fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+    if (outputPath && fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+
+    res.status(500).json({
+      success: false,
+      error: {
+        message: error.message || 'PDF compression failed',
+        code: 'COMPRESSION_ERROR',
+      },
+    });
+  }
+});
+
+/**
  * POST /api/simple-convert/pdf-extract-images
  * Extract images from PDF - accepts file upload directly
  */
@@ -293,6 +343,146 @@ router.post('/pdf-extract-images', upload.single('file'), async (req, res) => {
 });
 
 /**
+ * POST /api/simple-convert/image-compress
+ * Compress image (JPG, PNG, WEBP, etc.) - accepts file upload directly
+ */
+router.post('/image-compress', upload.single('file'), async (req, res) => {
+  let inputPath = null;
+  let outputPath = null;
+
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'No file uploaded' },
+      });
+    }
+
+    inputPath = req.file.path;
+    const quality = Number(req.body?.quality || 60); // 0-100
+    const maxWidth = Number(req.body?.maxWidth || 1920);
+    const maxHeight = Number(req.body?.maxHeight || 1080);
+    
+    console.log('🖼️ Compressing image:', req.file.originalname);
+
+    const tempOutput = path.join('uploads/temp', `compressed_${Date.now()}.jpg`);
+    
+    // Resize and compress image
+    const result = await imageService.resize(inputPath, {
+      width: maxWidth,
+      height: maxHeight,
+      fit: 'inside',
+      format: 'jpeg',
+      quality,
+    });
+
+    outputPath = result;
+
+    // Get file sizes for response
+    const originalStats = await require('fs').promises.stat(inputPath);
+    const compressedStats = await require('fs').promises.stat(outputPath);
+
+    res.download(outputPath, req.file.originalname.replace(/\.[^.]+$/, '_compressed.jpg'), (err) => {
+      if (inputPath && fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+      if (outputPath && fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+
+      if (err) {
+        console.error('❌ Download error:', err);
+      }
+    });
+  } catch (error) {
+    console.error('❌ Image compression failed:', error);
+
+    if (inputPath && fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+    if (outputPath && fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+
+    res.status(500).json({
+      success: false,
+      error: {
+        message: error.message || 'Image compression failed',
+        code: 'COMPRESSION_ERROR',
+      },
+    });
+  }
+});
+
+/**
+ * POST /api/simple-convert/video-compress
+ * Compress video - accepts file upload directly
+ * Note: Requires ffmpeg to be installed on server
+ */
+router.post('/video-compress', upload.single('file'), async (req, res) => {
+  let inputPath = null;
+  let outputPath = null;
+
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'No file uploaded' },
+      });
+    }
+
+    // Check if FFmpeg is available first
+    const ffmpegAvailable = await videoService.isFFmpegAvailable();
+    if (!ffmpegAvailable) {
+      return res.status(503).json({
+        success: false,
+        error: {
+          message: 'FFmpeg not installed on server. Cannot process video compression.',
+          code: 'FFMPEG_NOT_AVAILABLE',
+          requirement: 'Install ffmpeg: apt-get install -y ffmpeg ffprobe',
+          localTesting: 'Install FFmpeg locally: https://ffmpeg.org/download.html',
+        },
+      });
+    }
+
+    inputPath = req.file.path;
+    const quality = req.body?.quality || 'medium'; // 'low', 'medium', 'high'
+    
+    console.log('🎥 Compressing video:', req.file.originalname, 'with quality:', quality);
+
+    const tempOutput = path.join('uploads/temp', `compressed_${Date.now()}.mp4`);
+
+    // Compress video using FFmpeg
+    const result = await videoService.compressVideo(inputPath, tempOutput, { quality });
+
+    outputPath = result.path;
+
+    // Send the compressed video file
+    res.download(outputPath, req.file.originalname.replace(/\.[^.]+$/, '_compressed.mp4'), (err) => {
+      if (inputPath && fs.existsSync(inputPath)) {
+        try { fs.unlinkSync(inputPath); } catch (_) {}
+      }
+      if (outputPath && fs.existsSync(outputPath)) {
+        try { fs.unlinkSync(outputPath); } catch (_) {}
+      }
+
+      if (err) {
+        console.error('❌ Download error:', err);
+      }
+    });
+  } catch (error) {
+    console.error('❌ Video compression failed:', error);
+
+    if (inputPath && fs.existsSync(inputPath)) {
+      try { fs.unlinkSync(inputPath); } catch (_) {}
+    }
+    if (outputPath && fs.existsSync(outputPath)) {
+      try { fs.unlinkSync(outputPath); } catch (_) {}
+    }
+
+    res.status(500).json({
+      success: false,
+      error: {
+        message: error.message || 'Video compression failed',
+        code: 'COMPRESSION_ERROR',
+      },
+    });
+  }
+});
+
+/**
  * GET /api/simple-convert/health
  * Health check endpoint
  */
@@ -305,7 +495,10 @@ router.get('/health', (req, res) => {
       'PPTX → PDF',
       'PDF → DOCX',
       'PDF → PPTX',
+      'PDF → Compress',
       'PDF → Extract Images',
+      'Image → Compress',
+      'Video → Compress',
     ],
   });
 });

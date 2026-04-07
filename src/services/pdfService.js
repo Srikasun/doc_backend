@@ -590,8 +590,43 @@ class PdfService {
           gsSucceeded = false; // Fall through to Ghostscript or pdf-lib
         }
       }
+      // For large files, skip Ghostscript (too slow on Render free tier) and use pdf-lib
+      // Even with new compression, files >3MB often timeout
+      const fileSizeMB = originalStats.size / (1024 * 1024);
+      if (fileSizeMB > 3) {
+        console.log(`📊 Large file detected (${fileSizeMB.toFixed(1)}MB)`);
+        console.log(`   Skipping Ghostscript to prevent timeout on Render free tier`);
+        console.log(`   Using pdf-lib ${analysis.isTextHeavy ? 'text-optimization' : 'fallback'} compression...`);
+        
+        let optimizedBytes;
+        if (analysis.isTextHeavy) {
+          optimizedBytes = await this._compressTextPdf(pdfBytes);
+        } else {
+          optimizedBytes = await this._compressTextPdf(pdfBytes); // Use text optimization for large files too
+        }
+        
+        await fs.writeFile(outputPath, optimizedBytes);
+        const largeStats = await fs.stat(outputPath);
+        const largeReduction = Math.round((1 - largeStats.size / originalStats.size) * 100);
+        usedMethod = 'pdf-lib:large-file-fallback';
+        gsSucceeded = true;
+        
+        console.log(`✅ Large file compression completed`);
+        console.log(`   Output: ${(largeStats.size / 1024 / 1024).toFixed(2)}MB (${largeReduction}% reduction)`);
+        console.log(`📊 Method: Stream compression (Ghostscript skipped for speed)`);
+        
+        return {
+          path: outputPath,
+          originalSize: originalStats.size,
+          compressedSize: largeStats.size,
+          reduction: Math.max(largeReduction, 0),
+          method: usedMethod,
+        };
+      }
 
-      // Try Ghostscript for image-heavy PDFs
+      // For smaller files, try Ghostscript
+      console.log(`📊 File size OK (${fileSizeMB.toFixed(1)}MB) - attempting Ghostscript...`);
+            // Try Ghostscript for image-heavy PDFs
       const gsBinary = await this._checkGhostscriptAvailable();
       
       if (gsBinary) {

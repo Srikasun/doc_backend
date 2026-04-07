@@ -80,6 +80,29 @@ const startServer = async () => {
     // Connect to MongoDB
     await connectDB();
 
+    // Check for external tools availability
+    const { execFile } = require('child_process');
+    const { promisify } = require('util');
+    const execFileAsync = promisify(execFile);
+    
+    let ghostscriptAvailable = false;
+    let ffmpegAvailable = false;
+
+    // Check Ghostscript
+    for (const binary of ['gs', 'ghostscript', 'gswin64c']) {
+      try {
+        await execFileAsync(binary, ['-version']);
+        ghostscriptAvailable = true;
+        break;
+      } catch (_) {}
+    }
+
+    // Check FFmpeg
+    try {
+      await execFileAsync('ffmpeg', ['-version']);
+      ffmpegAvailable = true;
+    } catch (_) {}
+
     // Start server
     app.listen(PORT, () => {
       console.log('🚀 DocXpress API Server');
@@ -94,6 +117,9 @@ const startServer = async () => {
       console.log('   • PDF → DOCX');
       console.log('   • PDF → PPTX');
       console.log('   • Extract Images from PDF');
+      console.log('   • PDF Compression', ghostscriptAvailable ? '✅' : '⚠️ (fallback mode)');
+      console.log('   • Image Compression ✅');
+      console.log('   • Video Compression', ffmpegAvailable ? '✅' : '⚠️ (unavailable)');
       console.log('\n📋 Auth Endpoints:');
       console.log('   POST /api/auth/register - Register new user');
       console.log('   POST /api/auth/login - Login user');

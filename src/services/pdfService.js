@@ -489,6 +489,11 @@ class PdfService {
 
       const originalStats = await fs.stat(inputPath);
       const pdfSetting = this._resolvePdfCompressionSetting(quality);
+      
+      console.log(`📊 PDF Compression Request:`);
+      console.log(`   File: ${path.basename(inputPath)}`);
+      console.log(`   Size: ${(originalStats.size / 1024 / 1024).toFixed(2)}MB`);
+      console.log(`   Quality: ${quality} (→ ${pdfSetting})`);
 
       let usedMethod = 'pdf-lib-fallback';
       let gsSucceeded = false;
@@ -500,7 +505,7 @@ class PdfService {
       if (gsBinary) {
         try {
           compressionAttempted = true;
-          console.log(`🔧 Attempting Ghostscript compression with ${gsBinary}... (timeout: 25s)`);
+          console.log(`🔧 Attempting Ghostscript compression with ${gsBinary}... (timeout: 45s)`);
           
           await execFileAsync(gsBinary, [
             '-sDEVICE=pdfwrite',
@@ -509,8 +514,6 @@ class PdfService {
             '-dNOPAUSE',
             '-dQUIET',
             '-dBATCH',
-            '-dDEVICEWIDTHPOINTS=612',
-            '-dDEVICEHEIGHTPOINTS=792',
             '-dDetectDuplicateImages=true',
             '-dCompressFonts=true',
             '-dSubsetFonts=true',
@@ -519,13 +522,35 @@ class PdfService {
             '-dDownsampleColorImages=true',
             '-dDownsampleGrayImages=true',
             '-dDownsampleMonoImages=true',
-            '-dColorImageResolution=150',
-            '-dGrayImageResolution=150',
-            '-dMonoImageResolution=150',
+            // Aggressive resolution settings based on quality
+            ...(pdfSetting === '/screen' ? [
+              '-dColorImageResolution=100',
+              '-dGrayImageResolution=100',
+              '-dMonoImageResolution=100'
+            ] : pdfSetting === '/ebook' ? [
+              '-dColorImageResolution=150',
+              '-dGrayImageResolution=150',
+              '-dMonoImageResolution=150'
+            ] : [
+              '-dColorImageResolution=300',
+              '-dGrayImageResolution=300',
+              '-dMonoImageResolution=300'
+            ]),
+            // Image quality reduction (more aggressive for low quality)
+            ...(pdfSetting === '/screen' ? [
+              '-dJPEGQ=75',
+              '-r100x100'
+            ] : pdfSetting === '/ebook' ? [
+              '-dJPEGQ=85',
+              '-r150x150'
+            ] : [
+              '-dJPEGQ=95',
+              '-r300x300'
+            ]),
             `-sOutputFile=${outputPath}`,
             inputPath,
           ], {
-            timeout: 25000, // 25 second timeout
+            timeout: 45000, // 45 second timeout for Ghostscript
           });
 
           // Verify output file was created
@@ -535,7 +560,14 @@ class PdfService {
 
           usedMethod = `ghostscript:${gsBinary}`;
           gsSucceeded = true;
-          console.log(`✅ PDF compressed using Ghostscript (${quality})`);
+          const gsStats = await fs.stat(outputPath);
+          const gsReduction = Math.round((1 - gsStats.size / originalStats.size) * 100);
+          console.log(`✅ Ghostscript compression completed`);
+          console.log(`   Output: ${(gsStats.size / 1024 / 1024).toFixed(2)}MB (${gsReduction}% reduction)`);
+          console.log(`📊 Method: Ghostscript (${pdfSetting})`);
+          if (gsReduction < 5) {
+            console.log(`⚠️  Note: Low reduction may indicate already-compressed or vector-heavy PDF`);
+          }
         } catch (gsError) {
           console.warn(`⚠️ Ghostscript compression failed: ${gsError.message}`);
           if (fsSync.existsSync(outputPath)) {
@@ -546,15 +578,26 @@ class PdfService {
 
       // Fallback to pdf-lib if Ghostscript failed or unavailable
       if (!gsSucceeded) {
-        console.log(`📚 Using pdf-lib fallback compression...`);
+        console.log(`📚 Using pdf-lib fallback (stream compression only)...`);
         
         const pdfBytes = await fs.readFile(inputPath);
+        const fileSizeMB = originalStats.size / (1024 * 1024);
         
-        // Try image optimization with quality setting
-        const optimizedBytes = await this._compressPdfWithImageOptimization(pdfBytes, quality);
+        // Only do expensive optimization on smaller files
+        let optimizedBytes;
+        if (fileSizeMB > 8) {
+          console.log(`   File is ${fileSizeMB.toFixed(1)}MB - stream compression only`);
+          const doc = await PDFDocument.load(pdfBytes);
+          optimizedBytes = await doc.save({ useObjectStreams: true });
+        } else {
+          optimizedBytes = await this._compressPdfWithImageOptimization(pdfBytes, quality);
+        }
         
         await fs.writeFile(outputPath, optimizedBytes);
-        console.log(`✅ PDF compressed using pdf-lib fallback (${quality} quality)`);
+        const fbStats = await fs.stat(outputPath);
+        const fbReduction = Math.round((1 - fbStats.size / originalStats.size) * 100);
+        console.log(`✅ PDF processed using pdf-lib fallback`);
+        console.log(`   Output: ${(fbStats.size / 1024 / 1024).toFixed(2)}MB (${fbReduction}% reduction)`);
       }
 
       // Verify output file exists

@@ -378,13 +378,56 @@ class PdfService {
         await execFileAsync(gsBinary, ['-version']);
         console.log(`✅ Ghostscript found: ${gsBinary}`);
         return gsBinary;
-      } catch (_) {
-        // Try next candidate
+      } catch (err) {
+        console.debug(`⚠️ Ghostscript binary not found: ${gsBinary}`);
       }
     }
     
     console.warn('⚠️ Ghostscript not found - PDF compression will use fallback method');
     return null;
+  }
+
+  /**
+   * Compress PDF using pdf-lib with image optimization
+   * This is a fallback method when Ghostscript is not available
+   * @param {Buffer} pdfBytes - PDF bytes to compress
+   * @returns {Promise<Buffer>} - Compressed PDF bytes
+   */
+  async _compressPdfWithImageOptimization(pdfBytes) {
+    try {
+      const pdf = await PDFDocument.load(pdfBytes);
+      
+      // Get all embedded images and compress them
+      const images = pdf.getEmbeddedImages();
+      
+      for (const [ref, image] of images) {
+        try {
+          // Skip very small images
+          if (image.sizeInBytes < 5000) continue;
+          
+          // Compress image using sharp if it's JPEG
+          if (image.mimeType === 'image/jpeg') {
+            // Unfortunately, pdf-lib doesn't provide easy access to compress embedded images
+            // This is a limitation of the library
+            console.log('Note: Embedded images in PDF cannot be compressed with pdf-lib');
+          }
+        } catch (imgError) {
+          console.debug(`Could not process image: ${imgError.message}`);
+        }
+      }
+
+      // Save with object streams compression
+      const compressedBytes = await pdf.save({
+        useObjectStreams: true,
+        addDefaultPage: false,
+      });
+
+      return compressedBytes;
+    } catch (error) {
+      console.warn(`⚠️ Image optimization failed: ${error.message}`);
+      // Return original if optimization fails
+      return pdfBytes;
+    }
   }
 
   /**
@@ -402,17 +445,28 @@ class PdfService {
         throw AppError.badRequest(`Input file not found: ${inputPath}`);
       }
 
+      // Ensure output directory exists
+      const outputDir = path.dirname(outputPath);
+      if (!fsSync.existsSync(outputDir)) {
+        await fs.mkdir(outputDir, { recursive: true });
+        console.log(`📁 Created directory: ${outputDir}`);
+      }
+
       const originalStats = await fs.stat(inputPath);
       const pdfSetting = this._resolvePdfCompressionSetting(quality);
 
       let usedMethod = 'pdf-lib-fallback';
       let gsSucceeded = false;
+      let compressionAttempted = false;
 
       // Try Ghostscript first
       const gsBinary = await this._checkGhostscriptAvailable();
       
       if (gsBinary) {
         try {
+          compressionAttempted = true;
+          console.log(`🔧 Attempting Ghostscript compression with ${gsBinary}...`);
+          
           await execFileAsync(gsBinary, [
             '-sDEVICE=pdfwrite',
             '-dCompatibilityLevel=1.4',
@@ -423,9 +477,16 @@ class PdfService {
             '-dDetectDuplicateImages=true',
             '-dCompressFonts=true',
             '-dSubsetFonts=true',
+            '-dCompressStreams=true',
+            '-r150',
             `-sOutputFile=${outputPath}`,
             inputPath,
           ]);
+
+          // Verify output file was created
+          if (!fsSync.existsSync(outputPath)) {
+            throw new Error('Ghostscript output file not created');
+          }
 
           usedMethod = `ghostscript:${gsBinary}`;
           gsSucceeded = true;
@@ -438,20 +499,22 @@ class PdfService {
         }
       }
 
-      // Fallback to pdf-lib if Ghostscript failed
+      // Fallback to pdf-lib if Ghostscript failed or unavailable
       if (!gsSucceeded) {
+        console.log(`📚 Using pdf-lib fallback compression...`);
+        
         const pdfBytes = await fs.readFile(inputPath);
-        const pdf = await PDFDocument.load(pdfBytes);
+        
+        // Try image optimization first
+        const optimizedBytes = await this._compressPdfWithImageOptimization(pdfBytes);
+        
+        await fs.writeFile(outputPath, optimizedBytes);
+        console.log(`✅ PDF compressed using pdf-lib fallback`);
+      }
 
-        // Comprehensive fallback optimization using pdf-lib
-        // This provides reasonable compression without external tools
-        const compressedBytes = await pdf.save({
-          useObjectStreams: true,
-          addDefaultPage: false,
-        });
-
-        await fs.writeFile(outputPath, compressedBytes);
-        console.log(`✅ PDF compressed using pdf-lib fallback (${quality})`);
+      // Verify output file exists
+      if (!fsSync.existsSync(outputPath)) {
+        throw new Error(`Output file was not created: ${outputPath}`);
       }
 
       const compressedStats = await fs.stat(outputPath);

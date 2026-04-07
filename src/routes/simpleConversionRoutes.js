@@ -243,11 +243,17 @@ router.post('/pdf-compress', upload.single('file'), async (req, res) => {
       });
     }
 
+    // Ensure temp directory exists
+    const tempDir = 'uploads/temp';
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+
     inputPath = req.file.path;
-    const quality = Number(req.body?.quality || 75);
+    const quality = req.body?.quality || 'medium';
     console.log('📄 Compressing PDF:', req.file.originalname, `(quality: ${quality})`);
 
-    const tempOutput = path.join('uploads/temp', `compressed_${Date.now()}.pdf`);
+    const tempOutput = path.join(tempDir, `compressed_${Date.now()}_${Math.random().toString(36).substring(7)}.pdf`);
     const compressionResult = await pdfService.compressPdf(inputPath, tempOutput, { quality });
     outputPath = tempOutput;
 
@@ -263,6 +269,7 @@ router.post('/pdf-compress', upload.single('file'), async (req, res) => {
     });
   } catch (error) {
     console.error('❌ PDF compression failed:', error.message);
+    console.error('   Stack:', error.stack);
 
     if (inputPath && fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
     if (outputPath && fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
@@ -504,6 +511,82 @@ router.get('/health', (req, res) => {
       'Video → Compress',
     ],
   });
+});
+
+/**
+ * GET /api/simple-convert/diagnostics
+ * Diagnostics endpoint to check tool availability and temp directory
+ */
+router.get('/diagnostics', async (req, res) => {
+  try {
+    const { execFile } = require('child_process');
+    const { promisify } = require('util');
+    const execFileAsync = promisify(execFile);
+    const fsSync = require('fs');
+    const path = require('path');
+
+    // Check Ghostscript
+    let gsStatus = { available: false, binary: null, version: null };
+    for (const binary of ['gs', 'ghostscript', 'gswin64c']) {
+      try {
+        const { stdout } = await execFileAsync(binary, ['-version']);
+        gsStatus = { 
+          available: true, 
+          binary,
+          version: stdout.split('\n')[0],
+        };
+        break;
+      } catch (_) {}
+    }
+
+    // Check FFmpeg
+    let ffmpegStatus = { available: false, version: null };
+    try {
+      const { stdout } = await execFileAsync('ffmpeg', ['-version']);
+      ffmpegStatus = { 
+        available: true,
+        version: stdout.split('\n')[0],
+      };
+    } catch (_) {}
+
+    // Check temp directory
+    const tempDir = 'uploads/temp';
+    const tempExists = fsSync.existsSync(tempDir);
+    let tempWritable = false;
+    if (tempExists) {
+      try {
+        const testFile = path.join(tempDir, `.test_${Date.now()}`);
+        fsSync.writeFileSync(testFile, 'test');
+        fsSync.unlinkSync(testFile);
+        tempWritable = true;
+      } catch (_) {}
+    }
+
+    res.json({
+      success: true,
+      diagnostics: {
+        ghostscript: gsStatus,
+        ffmpeg: ffmpegStatus,
+        tempDirectory: {
+          path: tempDir,
+          exists: tempExists,
+          writable: tempWritable,
+        },
+        nodejs: {
+          version: process.version,
+          platform: process.platform,
+        },
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: {
+        message: 'Diagnostics check failed',
+        details: error.message,
+      },
+    });
+  }
 });
 
 module.exports = router;

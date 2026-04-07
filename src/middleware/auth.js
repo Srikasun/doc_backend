@@ -7,9 +7,21 @@ const User = require('../models/User');
 
 /**
  * Protect routes - verify JWT token
+ * Works with or without MongoDB connection
  */
 const protect = async (req, res, next) => {
   try {
+    // Check if MongoDB is available
+    const isMongoConnected = mongoose.connection.readyState === 1;
+
+    if (!isMongoConnected) {
+      return res.status(503).json({
+        success: false,
+        message: 'Authentication service unavailable - database not connected',
+        code: 'DB_UNAVAILABLE',
+      });
+    }
+
     let token;
 
     // Check for token in Authorization header
@@ -62,6 +74,9 @@ const protect = async (req, res, next) => {
     });
   }
 };
+
+// Import mongoose for connection check
+const mongoose = require('mongoose');
 
 /**
  * Authorize specific roles

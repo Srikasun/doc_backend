@@ -1,10 +1,18 @@
 /**
  * MongoDB Database Configuration
+ * MongoDB is optional - only connects if MONGODB_URI is provided
  */
 
 const mongoose = require('mongoose');
 
 const connectDB = async () => {
+  // Skip MongoDB connection if URI is not provided
+  if (!process.env.MONGODB_URI) {
+    console.log('⚠️  MONGODB_URI not configured - skipping MongoDB connection');
+    console.log('📝 Running in stateless mode (no user authentication/persistence)');
+    return null;
+  }
+
   try {
     const conn = await mongoose.connect(process.env.MONGODB_URI);
 

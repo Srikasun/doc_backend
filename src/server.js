@@ -109,6 +109,9 @@ const startServer = async () => {
       console.log(`📍 Server running on port ${PORT}`);
       console.log(`📍 Environment: ${NODE_ENV}`);
       console.log(`📍 API Base URL: http://localhost:${PORT}/api`);
+      console.log(`\n🔧 Tools Availability:`);
+      console.log(`   • Ghostscript: ${ghostscriptAvailable ? '✅ Available' : '⚠️ Will use pdf-lib fallback'}`);
+      console.log(`   • FFmpeg: ${ffmpegAvailable ? '✅ Available' : '⚠️ Video compression may be limited'}`);
       console.log('\n✅ Available features:');
       console.log('   • User Authentication (Register/Login)');
       console.log('   • Account Management (Update/Delete)');
@@ -132,11 +135,15 @@ const startServer = async () => {
       console.log('\n📋 Conversion Endpoints:');
       console.log('   GET  /api/health - Health check');
       console.log('   GET  /api/simple-convert/health - Conversion service health');
+      console.log('   GET  /api/simple-convert/diagnostics - Tool diagnostics');
       console.log('   POST /api/simple-convert/docx-to-pdf - Convert DOCX to PDF');
       console.log('   POST /api/simple-convert/pptx-to-pdf - Convert PPTX to PDF');
       console.log('   POST /api/simple-convert/pdf-to-docx - Convert PDF to DOCX');
       console.log('   POST /api/simple-convert/pdf-to-pptx - Convert PDF to PPTX');
-      console.log('   POST /api/simple-convert/pdf-extract-images - Extract images from PDF\n');
+      console.log('   POST /api/simple-convert/pdf-extract-images - Extract images from PDF');
+      console.log('   POST /api/simple-convert/pdf-compress - Compress PDF');
+      console.log('   POST /api/simple-convert/image-compress - Compress Image');
+      console.log('   POST /api/simple-convert/video-compress - Compress Video\n');
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error);

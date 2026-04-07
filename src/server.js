@@ -7,6 +7,7 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const express = require('express');
+const http = require('http');
 const cors = require('cors');
 const helmet = require('helmet');
 
@@ -39,6 +40,23 @@ app.use(cors({
 // Body parsing middleware with larger limits for file uploads
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+
+// Request timeout middleware for long-running operations (28 seconds for safety on Render)
+app.use((req, res, next) => {
+  // Set timeout for all requests, but longer for compression endpoints
+  const timeoutMs = req.path.includes('compress') ? 28000 : 15000;
+  res.setTimeout(timeoutMs, () => {
+    console.error(`⏱️ Request timeout after ${timeoutMs}ms: ${req.method} ${req.path}`);
+    res.status(408).json({
+      success: false,
+      error: {
+        message: 'Request timed out. The operation took too long to complete.',
+        code: 'REQUEST_TIMEOUT',
+      },
+    });
+  });
+  next();
+});
 
 // Request logging in development
 if (NODE_ENV === 'development') {
@@ -103,8 +121,14 @@ const startServer = async () => {
       ffmpegAvailable = true;
     } catch (_) {}
 
-    // Start server
-    app.listen(PORT, () => {
+    // Start server with HTTP server for better timeout control
+    const server = http.createServer(app);
+    
+    // Set socket timeout for all connections (30 seconds)
+    server.setTimeout(30000);
+    server.headersTimeout = 32000; // Slightly longer than socket timeout
+    
+    server.listen(PORT, () => {
       console.log('🚀 DocXpress API Server');
       console.log(`📍 Server running on port ${PORT}`);
       console.log(`📍 Environment: ${NODE_ENV}`);

@@ -465,7 +465,7 @@ class PdfService {
       if (gsBinary) {
         try {
           compressionAttempted = true;
-          console.log(`🔧 Attempting Ghostscript compression with ${gsBinary}...`);
+          console.log(`🔧 Attempting Ghostscript compression with ${gsBinary}... (timeout: 25s)`);
           
           await execFileAsync(gsBinary, [
             '-sDEVICE=pdfwrite',
@@ -474,14 +474,24 @@ class PdfService {
             '-dNOPAUSE',
             '-dQUIET',
             '-dBATCH',
+            '-dDEVICEWIDTHPOINTS=612',
+            '-dDEVICEHEIGHTPOINTS=792',
             '-dDetectDuplicateImages=true',
             '-dCompressFonts=true',
             '-dSubsetFonts=true',
             '-dCompressStreams=true',
-            '-r150',
+            '-dConvertCMYKImagesToRGB=true',
+            '-dDownsampleColorImages=true',
+            '-dDownsampleGrayImages=true',
+            '-dDownsampleMonoImages=true',
+            '-dColorImageResolution=150',
+            '-dGrayImageResolution=150',
+            '-dMonoImageResolution=150',
             `-sOutputFile=${outputPath}`,
             inputPath,
-          ]);
+          ], {
+            timeout: 25000, // 25 second timeout
+          });
 
           // Verify output file was created
           if (!fsSync.existsSync(outputPath)) {

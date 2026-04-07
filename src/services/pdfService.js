@@ -466,6 +466,63 @@ class PdfService {
   }
 
   /**
+   * Analyze PDF to detect if it's text-heavy or image-heavy
+   * @param {Buffer} pdfBytes - PDF bytes
+   * @returns {Promise<{isTextHeavy: boolean, imageCount: number, estimatedReduction: string}>}
+   */
+  async _analyzePdfContent(pdfBytes) {
+    try {
+      const pdf = await PDFDocument.load(pdfBytes);
+      const images = pdf.getEmbeddedImages();
+      const imageCount = images.size;
+      const pageCount = pdf.getPageCount();
+      
+      // If very few images relative to pages, it's text-heavy
+      const isTextHeavy = imageCount < (pageCount * 0.3);
+      
+      let estimatedReduction = 'Unknown';
+      if (isTextHeavy) {
+        estimatedReduction = '15-35% (text optimization)';
+      } else {
+        estimatedReduction = '30-60% (image compression)';
+      }
+      
+      console.log(`📊 PDF Analysis: ${pageCount} pages, ${imageCount} images → ${isTextHeavy ? 'Text-Heavy' : 'Image-Heavy'}`);
+      console.log(`   Est. Reduction: ${estimatedReduction}`);
+      
+      return { isTextHeavy, imageCount, pageCount, estimatedReduction };
+    } catch (error) {
+      console.warn(`⚠️ PDF analysis failed: ${error.message}`);
+      return { isTextHeavy: false, imageCount: 0, pageCount: 0, estimatedReduction: 'Unknown' };
+    }
+  }
+
+  /**
+   * Compress text-heavy PDF by removing unused content and aggressive stream compression
+   * @param {Buffer} pdfBytes - PDF bytes
+   * @returns {Promise<Buffer>} - Compressed PDF bytes
+   */
+  async _compressTextPdf(pdfBytes) {
+    try {
+      console.log(`📝 Applying text-optimized compression...`);
+      const pdf = await PDFDocument.load(pdfBytes);
+      
+      // Aggressive stream compression for text PDFs
+      const compressedBytes = await pdf.save({
+        useObjectStreams: true,
+        addDefaultPage: false,
+        objectsPerTick: 150, // Process more objects for better compression
+      });
+      
+      console.log(`✅ Text PDF optimized with stream compression`);
+      return compressedBytes;
+    } catch (error) {
+      console.warn(`⚠️ Text compression failed: ${error.message}`);
+      return pdfBytes;
+    }
+  }
+
+  /**
    * Compress PDF (reduce file size)
    * @param {string} inputPath - Path to PDF
    * @param {string} outputPath - Output path
@@ -495,11 +552,46 @@ class PdfService {
       console.log(`   Size: ${(originalStats.size / 1024 / 1024).toFixed(2)}MB`);
       console.log(`   Quality: ${quality} (→ ${pdfSetting})`);
 
+      // Analyze PDF content to determine best compression strategy
+      const pdfBytes = await fs.readFile(inputPath);
+      const analysis = await this._analyzePdfContent(pdfBytes);
+      
       let usedMethod = 'pdf-lib-fallback';
       let gsSucceeded = false;
       let compressionAttempted = false;
 
-      // Try Ghostscript first
+      // For text-heavy PDFs, use aggressive text compression
+      if (analysis.isTextHeavy) {
+        try {
+          console.log(`🎯 Text-heavy PDF detected - using text optimization...`);
+          compressionAttempted = true;
+          
+          const optimizedBytes = await this._compressTextPdf(pdfBytes);
+          await fs.writeFile(outputPath, optimizedBytes);
+          
+          const textStats = await fs.stat(outputPath);
+          const textReduction = Math.round((1 - textStats.size / originalStats.size) * 100);
+          usedMethod = 'pdf-lib:text-optimization';
+          gsSucceeded = true;
+          
+          console.log(`✅ Text compression completed`);
+          console.log(`   Output: ${(textStats.size / 1024 / 1024).toFixed(2)}MB (${textReduction}% reduction)`);
+          console.log(`📊 Method: Text-optimized stream compression`);
+          
+          return {
+            path: outputPath,
+            originalSize: originalStats.size,
+            compressedSize: textStats.size,
+            reduction: Math.max(textReduction, 0),
+            method: usedMethod,
+          };
+        } catch (textError) {
+          console.warn(`⚠️ Text compression failed: ${textError.message}`);
+          gsSucceeded = false; // Fall through to Ghostscript or pdf-lib
+        }
+      }
+
+      // Try Ghostscript for image-heavy PDFs
       const gsBinary = await this._checkGhostscriptAvailable();
       
       if (gsBinary) {
@@ -578,18 +670,27 @@ class PdfService {
 
       // Fallback to pdf-lib if Ghostscript failed or unavailable
       if (!gsSucceeded) {
-        console.log(`📚 Using pdf-lib fallback (stream compression only)...`);
+        console.log(`📚 Using pdf-lib fallback...`);
+        if (analysis.isTextHeavy) {
+          console.log(`   Applying text-optimized fallback compression`);
+        } else {
+          console.log(`   Applying image-optimized fallback compression`);
+        }
         
-        const pdfBytes = await fs.readFile(inputPath);
         const fileSizeMB = originalStats.size / (1024 * 1024);
         
-        // Only do expensive optimization on smaller files
+        // Use appropriate compression strategy based on analysis
         let optimizedBytes;
-        if (fileSizeMB > 8) {
+        if (analysis.isTextHeavy) {
+          // Text PDF: use aggressive stream compression
+          optimizedBytes = await this._compressTextPdf(pdfBytes);
+        } else if (fileSizeMB > 8) {
+          // Large file: skip image optimization to avoid timeout
           console.log(`   File is ${fileSizeMB.toFixed(1)}MB - stream compression only`);
           const doc = await PDFDocument.load(pdfBytes);
           optimizedBytes = await doc.save({ useObjectStreams: true });
         } else {
+          // Smaller image-heavy file: use image optimization
           optimizedBytes = await this._compressPdfWithImageOptimization(pdfBytes, quality);
         }
         

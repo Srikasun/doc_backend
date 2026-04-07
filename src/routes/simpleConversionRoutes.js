@@ -259,12 +259,24 @@ router.post('/pdf-compress', upload.single('file'), async (req, res) => {
 
     console.log(`✅ Compression complete: ${compressionResult.originalSize} → ${compressionResult.compressedSize} bytes (${compressionResult.reduction}% reduction) using ${compressionResult.method}`);
 
-    res.download(outputPath, req.file.originalname.replace(/\.pdf$/i, '_compressed.pdf'), (err) => {
-      if (inputPath && fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
-      if (outputPath && fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+    // Set response headers for file download
+    const compressedFilename = req.file.originalname.replace(/\.pdf$/i, '_compressed.pdf');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${compressedFilename}"`);
+    res.setHeader('Content-Length', compressionResult.compressedSize);
+
+    // Send the file
+    res.sendFile(path.resolve(outputPath), (err) => {
+      // Cleanup files after sending
+      if (inputPath && fs.existsSync(inputPath)) {
+        try { fs.unlinkSync(inputPath); } catch (e) {}
+      }
+      if (outputPath && fs.existsSync(outputPath)) {
+        try { fs.unlinkSync(outputPath); } catch (e) {}
+      }
 
       if (err) {
-        console.error('❌ Download error:', err);
+        console.error('❌ File send error:', err);
       }
     });
   } catch (error) {

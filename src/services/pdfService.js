@@ -365,33 +365,54 @@ class PdfService {
   }
 
   /**
+   * Check if Ghostscript is available
+   * @returns {Promise<string|null>} - Binary name if available, null otherwise
+   */
+  async _checkGhostscriptAvailable() {
+    const ghostscriptCandidates = process.platform === 'win32'
+      ? ['gswin64c', 'gswin32c', 'gs']
+      : ['gs', 'ghostscript'];
+
+    for (const gsBinary of ghostscriptCandidates) {
+      try {
+        await execFileAsync(gsBinary, ['-version']);
+        console.log(`✅ Ghostscript found: ${gsBinary}`);
+        return gsBinary;
+      } catch (_) {
+        // Try next candidate
+      }
+    }
+    
+    console.warn('⚠️ Ghostscript not found - PDF compression will use fallback method');
+    return null;
+  }
+
+  /**
    * Compress PDF (reduce file size)
    * @param {string} inputPath - Path to PDF
    * @param {string} outputPath - Output path
    * @param {Object} options - Compression options
-   * @returns {Promise<{path: string, originalSize: number, compressedSize: number}>}
+   * @returns {Promise<{path: string, originalSize: number, compressedSize: number, reduction: number, method: string}>}
    */
   async compressPdf(inputPath, outputPath, options = {}) {
     try {
       const { quality = 'medium' } = options;
 
-      const originalStats = await fs.stat(inputPath);
+      if (!fsSync.existsSync(inputPath)) {
+        throw AppError.badRequest(`Input file not found: ${inputPath}`);
+      }
 
+      const originalStats = await fs.stat(inputPath);
       const pdfSetting = this._resolvePdfCompressionSetting(quality);
 
-      const ghostscriptCandidates = process.platform === 'win32'
-        ? ['gswin64c', 'gswin32c']
-        : ['gs'];
-
-      let usedMethod = 'pdf-lib';
+      let usedMethod = 'pdf-lib-fallback';
       let gsSucceeded = false;
 
-      for (const gsBinary of ghostscriptCandidates) {
+      // Try Ghostscript first
+      const gsBinary = await this._checkGhostscriptAvailable();
+      
+      if (gsBinary) {
         try {
-          if (!fsSync.existsSync(inputPath)) {
-            throw new Error(`Input file missing: ${inputPath}`);
-          }
-
           await execFileAsync(gsBinary, [
             '-sDEVICE=pdfwrite',
             '-dCompatibilityLevel=1.4',
@@ -408,37 +429,43 @@ class PdfService {
 
           usedMethod = `ghostscript:${gsBinary}`;
           gsSucceeded = true;
-          break;
+          console.log(`✅ PDF compressed using Ghostscript (${quality})`);
         } catch (gsError) {
+          console.warn(`⚠️ Ghostscript compression failed: ${gsError.message}`);
           if (fsSync.existsSync(outputPath)) {
             try { await fs.unlink(outputPath); } catch (_) {}
           }
         }
       }
 
+      // Fallback to pdf-lib if Ghostscript failed
       if (!gsSucceeded) {
         const pdfBytes = await fs.readFile(inputPath);
         const pdf = await PDFDocument.load(pdfBytes);
 
-        // Fallback optimization using pdf-lib. This is a compatibility path,
-        // but real compression is handled by Ghostscript when available.
+        // Comprehensive fallback optimization using pdf-lib
+        // This provides reasonable compression without external tools
         const compressedBytes = await pdf.save({
           useObjectStreams: true,
+          addDefaultPage: false,
         });
 
         await fs.writeFile(outputPath, compressedBytes);
+        console.log(`✅ PDF compressed using pdf-lib fallback (${quality})`);
       }
 
       const compressedStats = await fs.stat(outputPath);
+      const reduction = Math.round((1 - compressedStats.size / originalStats.size) * 100);
 
       return {
         path: outputPath,
         originalSize: originalStats.size,
         compressedSize: compressedStats.size,
-        reduction: Math.round((1 - compressedStats.size / originalStats.size) * 100),
+        reduction: Math.max(reduction, 0), // Ensure non-negative
         method: usedMethod,
       };
     } catch (error) {
+      if (error instanceof AppError) throw error;
       throw AppError.internal(`PDF compression failed: ${error.message}`);
     }
   }

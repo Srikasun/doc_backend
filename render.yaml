@@ -5,7 +5,9 @@ services:
     plan: free
     buildCommand: |
       apt-get update && \
-      apt-get install -y ghostscript && \
+      apt-get install -y ghostscript ffmpeg && \
+      which gs && \
+      gs --version && \
       npm install
     startCommand: npm start
     envVars:

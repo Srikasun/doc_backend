@@ -245,11 +245,13 @@ router.post('/pdf-compress', upload.single('file'), async (req, res) => {
 
     inputPath = req.file.path;
     const quality = Number(req.body?.quality || 75);
-    console.log('📄 Compressing PDF:', req.file.originalname);
+    console.log('📄 Compressing PDF:', req.file.originalname, `(quality: ${quality})`);
 
     const tempOutput = path.join('uploads/temp', `compressed_${Date.now()}.pdf`);
-    await pdfService.compressPdf(inputPath, tempOutput, { quality });
+    const compressionResult = await pdfService.compressPdf(inputPath, tempOutput, { quality });
     outputPath = tempOutput;
+
+    console.log(`✅ Compression complete: ${compressionResult.originalSize} → ${compressionResult.compressedSize} bytes (${compressionResult.reduction}% reduction) using ${compressionResult.method}`);
 
     res.download(outputPath, req.file.originalname.replace(/\.pdf$/i, '_compressed.pdf'), (err) => {
       if (inputPath && fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
@@ -260,7 +262,7 @@ router.post('/pdf-compress', upload.single('file'), async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('❌ PDF compression failed:', error);
+    console.error('❌ PDF compression failed:', error.message);
 
     if (inputPath && fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
     if (outputPath && fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
@@ -270,6 +272,7 @@ router.post('/pdf-compress', upload.single('file'), async (req, res) => {
       error: {
         message: error.message || 'PDF compression failed',
         code: 'COMPRESSION_ERROR',
+        details: process.env.NODE_ENV === 'development' ? error.stack : undefined,
       },
     });
   }
